@@ -10,6 +10,10 @@ USO LOCAL:
 USO NO GITHUB ACTIONS:
     Disparado automaticamente pelo workflow. Os PDFs são baixados
     do Google Drive antes da execução.
+
+CORREÇÕES v2:
+    - Sanitização de caracteres de controle (IllegalCharacterError do openpyxl)
+    - Padrão "Excel" restringido para evitar falsos positivos massivos
 """
 
 import os
@@ -40,9 +44,22 @@ except ImportError:
     TQDM_DISPONIVEL = False
 
 # ── Configuração ──────────────────────────────────────────────────────────────
-PASTA_PDFS    = os.environ.get("PASTA_PDFS", "./pdfs")
-MAX_PAGINAS   = None   # None = todas as páginas
+PASTA_PDFS       = os.environ.get("PASTA_PDFS", "./pdfs")
+MAX_PAGINAS      = None
 TAMANHO_CONTEXTO = 200
+
+# Caracteres ilegais para o openpyxl (caracteres de controle ASCII, exceto tab/LF/CR)
+_ILLEGAL_CHARS_RE = re.compile(
+    r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\uFFFE\uFFFF]"
+)
+
+def sanitizar(texto: str) -> str:
+    """Remove caracteres ilegais para o Excel e normaliza espaços."""
+    if not isinstance(texto, str):
+        return str(texto) if texto is not None else ""
+    limpo = _ILLEGAL_CHARS_RE.sub(" ", texto)
+    limpo = re.sub(r" {2,}", " ", limpo)
+    return limpo.strip()
 
 # ── Softwares e plataformas conhecidos ───────────────────────────────────────
 SOFTWARES_CONHECIDOS = {
@@ -99,7 +116,7 @@ SOFTWARES_CONHECIDOS = {
         r"briink",
         r"measurabl",
         r"ecometrica",
-        r"carbon\s*foot\s*print",
+        r"carbon\s*foot\s*print\s*(?:software|tool|platform)",
         r"co2\s*logic",
     ],
 
@@ -153,12 +170,15 @@ SOFTWARES_CONHECIDOS = {
         r"\bmetabase\b",
     ],
 
+    # Padrões restritos para evitar falsos positivos:
+    # "Excel" aparece em quase todo inventário GHG Protocol como formato de entrega.
+    # Só marcamos quando mencionado explicitamente como ferramenta de cálculo.
     "Planilha": [
-        r"microsoft\s*excel",
-        r"\bexcel\b",
-        r"google\s*sheets",
-        r"planilha\s*eletr[oô]nica",
-        r"\bspreadsheet\b",
+        r"(?:elaborad[oa]|calculad[oa]|desenvolvid[oa]|construíd[oa])\s+(?:em|no|na|com)\s+(?:microsoft\s+)?excel",
+        r"planilha\s+(?:microsoft\s+)?excel\s+(?:desenvolvida|elaborada|criada|própria|interna|personalizada)",
+        r"(?:microsoft\s+)?excel\s+(?:como\s+)?(?:ferramenta|software|sistema)\s+(?:de\s+)?(?:cálculo|inventário|controle|gestão)",
+        r"google\s+sheets",
+        r"planilha\s+eletr[oô]nica\s+(?:própria|interna|personalizada|desenvolvida)",
     ],
 }
 
@@ -271,10 +291,17 @@ def analisar_pasta(pasta: str, max_paginas=None) -> list:
 
         if texto.startswith("__ERRO__"):
             resultados.append({
-                "arquivo": pdf_path.name, "empresa": pdf_path.stem,
-                "usa_software": "ERRO", "softwares": "", "categorias": "",
-                "contexto_1": texto, "contexto_2": "", "contexto_3": "",
-                "total_softwares": 0, "paginas_analisadas": 0, "tamanho_texto": 0,
+                "arquivo": sanitizar(pdf_path.name),
+                "empresa": sanitizar(pdf_path.stem),
+                "usa_software": "ERRO",
+                "softwares": "",
+                "categorias": "",
+                "contexto_1": sanitizar(texto),
+                "contexto_2": "",
+                "contexto_3": "",
+                "total_softwares": 0,
+                "paginas_analisadas": 0,
+                "tamanho_texto": 0,
             })
             continue
 
@@ -282,14 +309,14 @@ def analisar_pasta(pasta: str, max_paginas=None) -> list:
         c = consolidar_achados(achados)
 
         resultados.append({
-            "arquivo": pdf_path.name,
-            "empresa": pdf_path.stem,
+            "arquivo": sanitizar(pdf_path.name),
+            "empresa": sanitizar(pdf_path.stem),
             "usa_software": "SIM" if c["softwares"] else "NÃO",
-            "softwares": " | ".join(c["softwares"]),
-            "categorias": " | ".join(c["categorias"]),
-            "contexto_1": c["contextos"][0] if len(c["contextos"]) > 0 else "",
-            "contexto_2": c["contextos"][1] if len(c["contextos"]) > 1 else "",
-            "contexto_3": c["contextos"][2] if len(c["contextos"]) > 2 else "",
+            "softwares": sanitizar(" | ".join(c["softwares"])),
+            "categorias": sanitizar(" | ".join(c["categorias"])),
+            "contexto_1": sanitizar(c["contextos"][0]) if len(c["contextos"]) > 0 else "",
+            "contexto_2": sanitizar(c["contextos"][1]) if len(c["contextos"]) > 1 else "",
+            "contexto_3": sanitizar(c["contextos"][2]) if len(c["contextos"]) > 2 else "",
             "total_softwares": len(c["softwares"]),
             "paginas_analisadas": contar_paginas(pdf_path, max_paginas),
             "tamanho_texto": len(texto),
@@ -309,25 +336,29 @@ def gerar_excel(resultados: list, caminho_saida: str):
     COR_ERRO = "FCE4D6"
     COR_ALT  = "EBF3FB"
 
-    f_cab    = Font(name="Arial", bold=True, color="FFFFFF", size=11)
-    f_sim    = Font(name="Arial", bold=True, color="375623")
-    f_nao    = Font(name="Arial", color="7F0000")
-    f_norm   = Font(name="Arial", size=10)
-    al_cen   = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    al_esq   = Alignment(horizontal="left", vertical="top", wrap_text=True)
-    borda    = Border(
+    f_cab  = Font(name="Arial", bold=True, color="FFFFFF", size=11)
+    f_sim  = Font(name="Arial", bold=True, color="375623")
+    f_nao  = Font(name="Arial", color="7F0000")
+    f_norm = Font(name="Arial", size=10)
+    al_cen = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    al_esq = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    borda  = Border(
         left=Side(style="thin"), right=Side(style="thin"),
-        top=Side(style="thin"), bottom=Side(style="thin"),
+        top=Side(style="thin"),  bottom=Side(style="thin"),
     )
 
     # ── Aba Resultados ───────────────────────────────────────────────────────
     ws = wb.active
     ws.title = "Resultados"
 
-    cabecalhos = ["Arquivo PDF", "Empresa", "Usa Software?", "Softwares / Plataformas",
-                  "Categorias", "Total", "Páginas", "Contexto 1", "Contexto 2", "Contexto 3"]
-    chaves     = ["arquivo", "empresa", "usa_software", "softwares", "categorias",
-                  "total_softwares", "paginas_analisadas", "contexto_1", "contexto_2", "contexto_3"]
+    cabecalhos = [
+        "Arquivo PDF", "Empresa", "Usa Software?", "Softwares / Plataformas",
+        "Categorias", "Total", "Páginas", "Contexto 1", "Contexto 2", "Contexto 3",
+    ]
+    chaves = [
+        "arquivo", "empresa", "usa_software", "softwares", "categorias",
+        "total_softwares", "paginas_analisadas", "contexto_1", "contexto_2", "contexto_3",
+    ]
 
     for ci, cab in enumerate(cabecalhos, 1):
         c = ws.cell(row=1, column=ci, value=cab)
@@ -340,6 +371,8 @@ def gerar_excel(resultados: list, caminho_saida: str):
         cor_linha = COR_ALT if ri % 2 == 0 else "FFFFFF"
         for ci, chave in enumerate(chaves, 1):
             valor = res.get(chave, "")
+            if isinstance(valor, str):
+                valor = sanitizar(valor)
             c = ws.cell(row=ri, column=ci, value=valor)
             c.font = f_norm
             c.border = borda
@@ -371,10 +404,10 @@ def gerar_excel(resultados: list, caminho_saida: str):
 
     # ── Aba Resumo ───────────────────────────────────────────────────────────
     ws2 = wb.create_sheet("Resumo")
-    total      = len(resultados)
-    com_sw     = sum(1 for r in resultados if r["usa_software"] == "SIM")
-    sem_sw     = sum(1 for r in resultados if r["usa_software"] == "NÃO")
-    com_erro   = sum(1 for r in resultados if r["usa_software"] == "ERRO")
+    total    = len(resultados)
+    com_sw   = sum(1 for r in resultados if r["usa_software"] == "SIM")
+    sem_sw   = sum(1 for r in resultados if r["usa_software"] == "NÃO")
+    com_erro = sum(1 for r in resultados if r["usa_software"] == "ERRO")
 
     contagem_sw = {}
     for r in resultados:
@@ -390,7 +423,7 @@ def gerar_excel(resultados: list, caminho_saida: str):
     dados_resumo = [
         ("Total de PDFs analisados:", total),
         ("Empresas com software/plataforma identificado:", com_sw),
-        ("% que usam software:", f"=B4/B3" if total > 0 else "N/A"),
+        ("% que usam software:", "=B4/B3" if total > 0 else "N/A"),
         ("Empresas sem software identificado:", sem_sw),
         ("PDFs com erro de leitura:", com_erro),
         ("Data da análise:", datetime.now().strftime("%d/%m/%Y %H:%M")),
@@ -415,7 +448,7 @@ def gerar_excel(resultados: list, caminho_saida: str):
 
     for i, (sw, cnt) in enumerate(sw_ord, 12):
         cor = COR_ALT if i % 2 == 0 else "FFFFFF"
-        ws2[f"A{i}"] = sw
+        ws2[f"A{i}"] = sanitizar(sw)
         ws2[f"B{i}"] = cnt
         for col in ("A", "B"):
             ws2[f"{col}{i}"].fill = PatternFill("solid", start_color=cor)
@@ -425,7 +458,6 @@ def gerar_excel(resultados: list, caminho_saida: str):
     ws2.column_dimensions["A"].width = 50
     ws2.column_dimensions["B"].width = 20
 
-    # ── Salva ────────────────────────────────────────────────────────────────
     Path(caminho_saida).parent.mkdir(parents=True, exist_ok=True)
     wb.save(caminho_saida)
     print(f"\n✅ Planilha salva em: {caminho_saida}")
