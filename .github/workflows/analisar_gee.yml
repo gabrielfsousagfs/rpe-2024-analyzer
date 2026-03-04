@@ -1,1 +1,96 @@
+name: Analisar Inventários GEE
 
+on:
+  workflow_dispatch:
+    inputs:
+      gdrive_file_id:
+        description: "ID do arquivo ZIP no Google Drive (ex: 1aBcDeFgHiJkL...)"
+        required: true
+        type: string
+      max_paginas:
+        description: "Máximo de páginas por PDF a analisar (0 = todas)"
+        required: false
+        default: "0"
+        type: string
+
+jobs:
+  analisar:
+    name: Baixar PDFs e Analisar
+    runs-on: ubuntu-latest
+    timeout-minutes: 180   # 3h — ajuste se necessário
+
+    steps:
+      # ── 1. Checkout do repositório ─────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Python ──────────────────────────────────────────────────────────
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ── 3. Dependências ────────────────────────────────────────────────────
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      # ── 4. Baixar ZIP do Google Drive ──────────────────────────────────────
+      - name: Baixar ZIP dos PDFs do Google Drive
+        run: |
+          echo "📥 Baixando arquivo do Google Drive..."
+          python - <<'EOF'
+          import gdown, sys
+          file_id = "${{ github.event.inputs.gdrive_file_id }}"
+          url = f"https://drive.google.com/uc?id={file_id}"
+          gdown.download(url, "pdfs.zip", quiet=False, fuzzy=True)
+          print("✅ Download concluído.")
+          EOF
+
+      # ── 5. Extrair ZIP ─────────────────────────────────────────────────────
+      - name: Extrair PDFs
+        run: |
+          echo "📦 Extraindo ZIP..."
+          mkdir -p pdfs
+          unzip -q pdfs.zip -d pdfs_raw
+          # Move todos os PDFs encontrados (independente de subpastas) para ./pdfs
+          find pdfs_raw -name "*.pdf" -exec mv {} pdfs/ \;
+          PDF_COUNT=$(find pdfs -name "*.pdf" | wc -l)
+          echo "📄 PDFs extraídos: $PDF_COUNT"
+          echo "PDF_COUNT=$PDF_COUNT" >> $GITHUB_ENV
+
+      # ── 6. Executar análise ────────────────────────────────────────────────
+      - name: Executar análise
+        run: |
+          MAX_PAG="${{ github.event.inputs.max_paginas }}"
+          DATA=$(date +"%Y-%m-%d")
+          SAIDA="resultados_gee_${DATA}.xlsx"
+
+          if [ "$MAX_PAG" = "0" ]; then
+            echo "🔍 Analisando todas as páginas de $PDF_COUNT PDFs..."
+            python analisar_inventarios_gee.py --pasta pdfs --saida "$SAIDA"
+          else
+            echo "🔍 Analisando até $MAX_PAG páginas por PDF ($PDF_COUNT PDFs)..."
+            python analisar_inventarios_gee.py --pasta pdfs --saida "$SAIDA" --paginas "$MAX_PAG"
+          fi
+
+          echo "SAIDA=$SAIDA" >> $GITHUB_ENV
+
+      # ── 7. Salvar planilha como artefato ───────────────────────────────────
+      - name: Salvar planilha de resultados
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultados-gee-${{ github.run_number }}
+          path: ${{ env.SAIDA }}
+          retention-days: 90   # mantém por 90 dias; ajuste se quiser
+
+      # ── 8. Resumo no log do workflow ───────────────────────────────────────
+      - name: Exibir resumo
+        run: |
+          echo "## ✅ Análise concluída" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| PDFs analisados | $PDF_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| Arquivo gerado | \`$SAIDA\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Disponível em | Actions → Artifacts → resultados-gee-${{ github.run_number }} |" >> $GITHUB_STEP_SUMMARY
