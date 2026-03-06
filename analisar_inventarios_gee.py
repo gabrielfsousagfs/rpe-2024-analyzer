@@ -1,11 +1,11 @@
 """
 Analisador de Inventários de GEE - Identificação de Softwares/Plataformas
 =========================================================================
-v3 - Mudanças:
-    - Remove falsos positivos do GHG Protocol / Registro Público
-    - Extrai "Nome Fantasia" da página 2 de cada PDF
-    - Extrai e-mail do responsável da seção "Dados do inventário"
-    - Sanitização de caracteres ilegais para o Excel
+v4 - Mudanças:
+    - Análise restrita às seções 3.1, 3.2, 4.5 e 4.6 do formulário GHG Protocol
+    - Seção "Informações institucionais" explicitamente ignorada
+    - Removidos: gvces, fgv ces, categoria "Planilha"
+    - Mantém extração de Nome Fantasia, e-mail e sanitização
 """
 
 import os
@@ -38,7 +38,7 @@ except ImportError:
 # ── Configuração ──────────────────────────────────────────────────────────────
 PASTA_PDFS       = os.environ.get("PASTA_PDFS", "./pdfs")
 MAX_PAGINAS      = None
-TAMANHO_CONTEXTO = 250
+TAMANHO_CONTEXTO = 300
 
 _ILLEGAL_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\uFFFE\uFFFF]")
 
@@ -49,16 +49,7 @@ def sanitizar(texto: str) -> str:
     return re.sub(r" {2,}", " ", limpo).strip()
 
 
-# ── Softwares externos (sem GHG Protocol / Registro Público) ─────────────────
-#
-# REMOVIDOS intencionalmente para evitar falsos positivos:
-#   - "Programa Brasileiro GHG Protocol" → é o programa de registro, não um software
-#   - "Registro Público de Emissões"     → idem
-#   - "pbghg", "plataforma ghg"          → idem
-#   - Categoria "Ferramentas GHG Protocol / IPCC" inteira → são metodologias, não softwares
-#   - "CDP / Carbon Disclosure Project"  → é um programa de reporte, não software de cálculo
-#   - "SEEG", "inventário corporativo"   → referências ao registro, não ferramentas
-#
+# ── Softwares externos conhecidos ─────────────────────────────────────────────
 SOFTWARES_CONHECIDOS = {
 
     "Plataforma Brasileira GEE": [
@@ -66,13 +57,22 @@ SOFTWARES_CONHECIDOS = {
         r"waycarbon",
         r"deep\s*esg",
         r"\bclimas\b",
-        r"\becosystem\b",
-        r"\bgvces\b",
-        r"fgv\s*ces",
+        r"\becosystem\b",   # produto WayCarbon
         r"\bimaflora\b",
         r"\bidesam\b",
         r"\becam\b",
         r"\bqualidata\b",
+        r"\bingee\b",
+        r"\bcerensa\b",
+        r"\bakvo[\s\-]?esg\b",
+        r"\bneutrality\b",
+        r"\bemisfera\b",
+        r"\bvankka\b",
+        r"\barca\s+sustentabilidade\b",
+        r"\bsigea\b",
+        r"esphera[\.\s]?bi",
+        r"\btbl\s*manager\b",
+        r"sinai\b",
     ],
 
     "Plataforma/Sistema GEE Internacional": [
@@ -97,23 +97,20 @@ SOFTWARES_CONHECIDOS = {
         r"\bemitwise\b",
         r"\bcarbonsmart\b",
         r"\bcarbonchain\b",
-        r"\bsweep\b",
-        r"sinai\s*technologies",
-        r"\bnovisto\b",
-        r"sustainability\s*cloud",
         r"\bworkiva\b",
         r"diligent\s*esg",
         r"\bbriink\b",
         r"\bmeasurabl\b",
         r"\becometrica\b",
         r"co2\s*logic",
+        r"\bcredit360\b",
+        r"ul\s*solutions\b.*\bsoftware\b",
     ],
 
     "ACV / LCA": [
         r"\bsimapro\b",
         r"open\s*lca",
         r"\bgabi\b",
-        r"\bumberto\b",
         r"\becoinvent\b",
         r"one\s*click\s*lca",
         r"\becochain\b",
@@ -122,6 +119,7 @@ SOFTWARES_CONHECIDOS = {
     "ERP / Sistema Corporativo": [
         r"\bsap\b",
         r"\boracle\b",
+        r"jd\s*edwards",
         r"\btotvs\b",
         r"senior\s*sistemas",
         r"\bdatasul\b",
@@ -144,30 +142,14 @@ SOFTWARES_CONHECIDOS = {
         r"\blooker\b",
         r"\bmetabase\b",
     ],
-
-    # Planilha apenas quando citada como ferramenta de cálculo, não como formato de entrega
-    "Planilha": [
-        r"(?:elaborad[oa]|calculad[oa]|desenvolvid[oa]|construíd[oa])\s+(?:em|no|na|com)\s+(?:microsoft\s+)?excel",
-        r"planilha\s+(?:microsoft\s+)?excel\s+(?:desenvolvida|elaborada|criada|própria|interna|personalizada)",
-        r"(?:microsoft\s+)?excel\s+(?:como\s+)?(?:ferramenta|software|sistema)\s+(?:de\s+)?(?:cálculo|inventário|controle|gestão)",
-        r"google\s+sheets",
-        r"planilha\s+eletr[oô]nica\s+(?:própria|interna|personalizada|desenvolvida)",
-    ],
 }
 
 # Padrões genéricos — capturam softwares não listados acima
 PADROES_GENERICOS = [
-    r"(?:software|plataforma|sistema|ferramenta|aplicativo)\s+(?:de\s+\w+\s+){0,3}[\"']?([\w\s\-\.]{3,40}?)[\"']?\s*(?:para|foi|,|\.|;)",
-    r"(?:utilizad[oa]|usad[oa]|empregad[oa]|adotad[oa])\s+(?:o|a)\s+(?:software|plataforma|sistema|ferramenta)\s+[\"']?([\w\s\-\.]{3,40}?)[\"']",
-    r"calculad[oa]\s+(?:no|na|pelo|pela|através\s+do|através\s+da)\s+(?:software|plataforma|sistema)\s+[\"']?([\w\s\-\.]{3,40}?)[\"']?\s*(?:,|\.|;|\n)",
-    r"[\"']([\w\s\-\.]{3,40})[\"']\s*(?:software|plataforma|sistema|ferramenta)",
-]
-
-PALAVRAS_CONTEXTO_GEE = [
-    "emissão", "emissões", "inventário", "carbono", "ghg", "gee",
-    "gases", "efeito estufa", "co2", "ch4", "n2o", "escopo", "scope",
-    "fator de emissão", "cálculo", "quantificação", "monitoramento",
-    "gestão ambiental", "pegada de carbono",
+    r"(?:software|plataforma|sistema|ferramenta|aplicativo)\s+(?:[\w]+\s+){0,3}[\"'\u201c\u201d]?([\w\s\-\.]{3,50}?)[\"'\u201c\u201d]?\s*(?:,|\.|;|\n|para\b|foi\b)",
+    r"(?:utilizad[oa]|usad[oa]|empregad[oa]|adotad[oa])\s+(?:o|a|o\s+software|a\s+plataforma|o\s+sistema|a\s+ferramenta)\s+[\"'\u201c\u201d]?([\w\s\-\.]{3,50}?)[\"'\u201c\u201d]?\s*[,\.\n]",
+    r"calculad[oa]\s+(?:no|na|pelo|pela|através\s+do|através\s+da)\s+(?:software|plataforma|sistema|ferramenta)\s+[\"'\u201c\u201d]?([\w\s\-\.]{3,50}?)[\"'\u201c\u201d]?\s*[,\.\n]",
+    r"[\"'\u201c\u201d]([\w\s\-\.]{3,50})[\"'\u201c\u201d]\s*[,]?\s*(?:software|plataforma|sistema|ferramenta)",
 ]
 
 PALAVRAS_IGNORAR = {
@@ -175,13 +157,77 @@ PALAVRAS_IGNORAR = {
     "para", "com", "em", "por", "este", "esta", "esse", "essa",
     "dados", "informações", "relatório", "cálculos", "sistema",
     "software", "plataforma", "ferramenta", "ghg", "gee", "co2",
-    "protocolo", "protocol", "programa", "brasileiro",
+    "protocolo", "protocol", "programa", "brasileiro", "método",
+    "metodologia", "ferramenta", "cálculo", "escopo", "emissões",
 }
+
+
+# ── Extração de seções específicas ────────────────────────────────────────────
+
+# Títulos das seções de interesse (com variações de formatação dos PDFs)
+SECOES_ALVO = [
+    r"3[\.\s]*1[\s\.\:►▶●◆\-]*[Mm][ée]todo\s*e\s*/\s*ou\s*ferramentas\s*intersetoriais",
+    r"3[\.\s]*2[\s\.\:►▶●◆\-]*[Mm][ée]todo\s*e\s*/\s*ou\s*ferramentas\s*para\s*setores\s*espec[íi]ficos",
+    r"4[\.\s]*5[\s\.\:►▶●◆\-]*[Ii]nforma[çc][õo]es\s*sobre\s*incertezas",
+    r"4[\.\s]*6[\s\.\:►▶●◆\-]*[Dd]escri[çc][ãa]o\s*sobre\s*a[çc][õo]es\s*internas",
+]
+
+# Títulos que marcam o fim de uma seção de interesse (próximas seções do formulário)
+SECOES_FIM = [
+    r"3[\.\s]*3[\s\.\:►▶●◆\-]*[Ff]atores\s*de\s*emiss[ãa]o",
+    r"4[\.\s]*[1-47-9][\s\.\:►▶●◆\-]",
+    r"5[\.\s]*[0-9][\s\.\:►▶●◆\-]",
+    r"[Ii]nforma[çc][õo]es\s*institucionais\s*[:：]?",
+    r"[Ss]umário\s+[Ee]xecutivo",
+    r"[Aa]p[êe]ndice",
+]
+
+# Seção a ignorar explicitamente (descrição institucional da empresa)
+SECAO_IGNORAR = re.compile(
+    r"[Ii]nforma[çc][õo]es\s*institucionais\s*[:：]",
+    re.IGNORECASE
+)
+
+PADRAO_ALVO   = re.compile("|".join(SECOES_ALVO),   re.IGNORECASE)
+PADRAO_FIM    = re.compile("|".join(SECOES_FIM),     re.IGNORECASE)
+
+
+def extrair_secoes_relevantes(texto_completo: str) -> str:
+    """
+    Extrai apenas o conteúdo das seções 3.1, 3.2, 4.5 e 4.6 do formulário GHG Protocol.
+    Ignora a seção 'Informações institucionais'.
+    Retorna a concatenação dessas seções.
+    """
+    trechos = []
+    pos = 0
+    tamanho = len(texto_completo)
+
+    while pos < tamanho:
+        # Encontra próxima seção de interesse
+        m_alvo = PADRAO_ALVO.search(texto_completo, pos)
+        if not m_alvo:
+            break
+
+        inicio_secao = m_alvo.start()
+
+        # Encontra onde essa seção termina (próxima seção relevante ou de fim)
+        m_fim = PADRAO_FIM.search(texto_completo, m_alvo.end())
+        fim_secao = m_fim.start() if m_fim else min(inicio_secao + 2000, tamanho)
+
+        trecho = texto_completo[inicio_secao:fim_secao].strip()
+
+        # Ignora se o trecho contiver "Informações institucionais"
+        if not SECAO_IGNORAR.search(trecho):
+            trechos.append(trecho)
+
+        pos = m_alvo.end()
+
+    return "\n\n".join(trechos)
 
 
 # ── Extração de texto por página ──────────────────────────────────────────────
 
-def extrair_paginas(caminho_pdf: Path, max_paginas=None):
+def extrair_paginas(caminho_pdf: Path, max_paginas=None) -> list:
     """Retorna lista de strings, uma por página."""
     try:
         doc = fitz.open(str(caminho_pdf))
@@ -207,20 +253,22 @@ def contar_paginas(caminho_pdf: Path, max_paginas=None) -> int:
 
 def extrair_nome_fantasia(paginas: list) -> str:
     """
-    Busca 'Nome Fantasia' nas primeiras páginas do PDF.
-    O formulário GHG Protocol apresenta o campo assim:
-        Nome Fantasia
-        <valor na linha seguinte>
-    ou
-        Nome Fantasia: <valor>
+    Busca 'Nome Fantasia' nas primeiras 3 páginas.
+    NÃO usa o bloco 'Informações institucionais' para evitar capturar
+    a descrição da empresa ao invés do nome.
     """
-    # Busca nas primeiras 3 páginas (geralmente está na pág 1 ou 2)
     texto_busca = "\n".join(paginas[:3]) if len(paginas) >= 3 else "\n".join(paginas)
 
+    # Remove o bloco de Informações institucionais antes de buscar o nome fantasia
+    texto_busca = re.sub(
+        r"[Ii]nforma[çc][õo]es\s*institucionais\s*[:：].*",
+        "",
+        texto_busca,
+        flags=re.DOTALL
+    )
+
     padroes = [
-        # "Nome Fantasia\nACME Ltda"
         r"[Nn]ome\s+[Ff]antasia\s*[:\n]\s*([^\n]{2,100})",
-        # "Nome Fantasia   ACME Ltda" (espaços em vez de newline, em PDFs compactados)
         r"[Nn]ome\s+[Ff]antasia\s{2,}([^\n]{2,100})",
     ]
 
@@ -228,7 +276,6 @@ def extrair_nome_fantasia(paginas: list) -> str:
         m = re.search(padrao, texto_busca)
         if m:
             nome = m.group(1).strip()
-            # Remove lixo típico: números de página, datas, rodapés
             nome = re.sub(r"\s+\d{1,2}/\d{1,2}/\d{4}.*$", "", nome).strip()
             nome = re.sub(r"\s+\d+\s*$", "", nome).strip()
             if len(nome) > 1:
@@ -242,18 +289,12 @@ def extrair_nome_fantasia(paginas: list) -> str:
 _EMAIL_RE = re.compile(r"[\w\.\-\+]+@[\w\.\-]+\.[a-zA-Z]{2,}")
 
 def extrair_email_responsavel(paginas: list) -> str:
-    """
-    Busca o e-mail na seção 'Dados do inventário' / 'E-mail do responsável'.
-    Estratégia:
-      1. Procura a label 'e-mail do responsável' e captura o e-mail próximo
-      2. Se não achar, pega o primeiro e-mail das primeiras páginas
-    """
+    """Busca o e-mail na seção 'Dados do inventário', primeiras 4 páginas."""
     texto_busca = "\n".join(paginas[:4]) if len(paginas) >= 4 else "\n".join(paginas)
 
-    # Tenta encontrar o e-mail logo após a label do campo
     padroes_label = [
-        r"[Ee]-?mail\s+do\s+[Rr]esponsável\s*[:\n]\s*([\w\.\-\+]+@[\w\.\-]+\.[a-zA-Z]{2,})",
-        r"[Ee]-?mail\s+do\s+[Rr]esponsável\s*[:\n][^\n@]{0,60}?([\w\.\-\+]+@[\w\.\-]+\.[a-zA-Z]{2,})",
+        r"[Ee]-?mail\s+do\s+[Rr]espons[áa]vel\s*[:\n]\s*([\w\.\-\+]+@[\w\.\-]+\.[a-zA-Z]{2,})",
+        r"[Ee]-?mail\s+do\s+[Rr]espons[áa]vel\s*[:\n][^\n@]{0,80}?([\w\.\-\+]+@[\w\.\-]+\.[a-zA-Z]{2,})",
         r"[Ee]-?mail\s*[:\n]\s*([\w\.\-\+]+@[\w\.\-]+\.[a-zA-Z]{2,})",
     ]
 
@@ -262,7 +303,6 @@ def extrair_email_responsavel(paginas: list) -> str:
         if m:
             return sanitizar(m.group(1).strip())
 
-    # Fallback: primeiro e-mail encontrado nas primeiras páginas
     emails = _EMAIL_RE.findall(texto_busca)
     if emails:
         return sanitizar(emails[0])
@@ -279,17 +319,14 @@ def encontrar_softwares_conhecidos(texto: str) -> list:
         for padrao in padroes:
             for match in re.finditer(padrao, texto_lower, re.IGNORECASE):
                 inicio = max(0, match.start() - TAMANHO_CONTEXTO)
-                fim = min(len(texto), match.end() + TAMANHO_CONTEXTO)
+                fim    = min(len(texto), match.end() + TAMANHO_CONTEXTO)
                 contexto = texto[inicio:fim].replace("\n", " ").strip()
-                nome = texto[match.start():match.end()].strip()
+                nome     = texto[match.start():match.end()].strip()
                 achados.append({"software": nome, "categoria": categoria, "contexto": contexto})
     return achados
 
 
 def encontrar_softwares_genericos(texto: str) -> list:
-    texto_lower = texto.lower()
-    if not any(p in texto_lower for p in PALAVRAS_CONTEXTO_GEE):
-        return []
     achados = []
     for padrao in PADROES_GENERICOS:
         for match in re.finditer(padrao, texto, re.IGNORECASE):
@@ -300,7 +337,7 @@ def encontrar_softwares_genericos(texto: str) -> list:
             if len(nome) < 3 or len(nome) > 60 or nome.lower() in PALAVRAS_IGNORAR:
                 continue
             inicio = max(0, match.start() - TAMANHO_CONTEXTO)
-            fim = min(len(texto), match.end() + TAMANHO_CONTEXTO)
+            fim    = min(len(texto), match.end() + TAMANHO_CONTEXTO)
             contexto = texto[inicio:fim].replace("\n", " ").strip()
             achados.append({"software": nome, "categoria": "Identificado automaticamente", "contexto": contexto})
     return achados
@@ -336,7 +373,6 @@ def analisar_pasta(pasta: str, max_paginas=None) -> list:
     for pdf_path in iterador:
         paginas = extrair_paginas(pdf_path, max_paginas)
 
-        # Verifica erro de leitura
         if paginas and paginas[0].startswith("__ERRO__"):
             resultados.append({
                 "arquivo":            sanitizar(pdf_path.name),
@@ -345,27 +381,39 @@ def analisar_pasta(pasta: str, max_paginas=None) -> list:
                 "usa_software":       "ERRO",
                 "softwares":          "",
                 "categorias":         "",
+                "secoes_encontradas": "",
                 "contexto_1":         sanitizar(paginas[0]),
                 "contexto_2":         "",
                 "contexto_3":         "",
                 "total_softwares":    0,
                 "paginas_analisadas": 0,
-                "tamanho_texto":      0,
             })
             continue
 
         texto_completo = "\n".join(paginas)
 
-        # Extrai metadados
-        nome_empresa     = extrair_nome_fantasia(paginas)
+        # Metadados (nome fantasia e email buscam no texto completo, não só nas seções)
+        nome_empresa      = extrair_nome_fantasia(paginas)
         email_responsavel = extrair_email_responsavel(paginas)
 
-        # Se não encontrou nome fantasia, usa o nome do arquivo como fallback
         if not nome_empresa:
             nome_empresa = sanitizar(pdf_path.stem)
 
-        # Detecta softwares
-        achados = encontrar_softwares_conhecidos(texto_completo) + encontrar_softwares_genericos(texto_completo)
+        # Extrai apenas seções relevantes para detecção de software
+        texto_secoes = extrair_secoes_relevantes(texto_completo)
+        secoes_encontradas = "SIM" if texto_secoes.strip() else "NÃO"
+
+        # Se não encontrou seções estruturadas (PDF muito compactado), usa texto completo
+        # mas remove o bloco de Informações Institucionais
+        if not texto_secoes.strip():
+            texto_secoes = re.sub(
+                r"[Ii]nforma[çc][õo]es\s*institucionais\s*[:：].*?(?=\n\n|\Z)",
+                "",
+                texto_completo,
+                flags=re.DOTALL
+            )
+
+        achados = encontrar_softwares_conhecidos(texto_secoes) + encontrar_softwares_genericos(texto_secoes)
         c = consolidar_achados(achados)
 
         resultados.append({
@@ -375,12 +423,12 @@ def analisar_pasta(pasta: str, max_paginas=None) -> list:
             "usa_software":       "SIM" if c["softwares"] else "NÃO",
             "softwares":          sanitizar(" | ".join(c["softwares"])),
             "categorias":         sanitizar(" | ".join(c["categorias"])),
+            "secoes_encontradas": secoes_encontradas,
             "contexto_1":         sanitizar(c["contextos"][0]) if len(c["contextos"]) > 0 else "",
             "contexto_2":         sanitizar(c["contextos"][1]) if len(c["contextos"]) > 1 else "",
             "contexto_3":         sanitizar(c["contextos"][2]) if len(c["contextos"]) > 2 else "",
             "total_softwares":    len(c["softwares"]),
             "paginas_analisadas": contar_paginas(pdf_path, max_paginas),
-            "tamanho_texto":      len(texto_completo),
         })
 
     return resultados
@@ -419,6 +467,7 @@ def gerar_excel(resultados: list, caminho_saida: str):
         "Usa Software Externo?",
         "Softwares / Plataformas",
         "Categorias",
+        "Seções 3.1/3.2/4.5/4.6 encontradas?",
         "Total",
         "Páginas",
         "Contexto 1",
@@ -432,6 +481,7 @@ def gerar_excel(resultados: list, caminho_saida: str):
         "usa_software",
         "softwares",
         "categorias",
+        "secoes_encontradas",
         "total_softwares",
         "paginas_analisadas",
         "contexto_1",
@@ -467,12 +517,12 @@ def gerar_excel(resultados: list, caminho_saida: str):
                 elif valor == "ERRO":
                     c.fill = PatternFill("solid", start_color=COR_ERRO)
                 c.alignment = al_cen
-            elif chave in ("total_softwares", "paginas_analisadas"):
+            elif chave in ("total_softwares", "paginas_analisadas", "secoes_encontradas"):
                 c.alignment = al_cen
             else:
                 c.alignment = al_esq
 
-    larguras = [25, 45, 35, 20, 50, 35, 8, 8, 80, 80, 80]
+    larguras = [25, 42, 32, 18, 50, 35, 22, 8, 8, 80, 80, 80]
     for i, larg in enumerate(larguras, 1):
         ws.column_dimensions[get_column_letter(i)].width = larg
 
@@ -484,11 +534,12 @@ def gerar_excel(resultados: list, caminho_saida: str):
 
     # ── Aba Resumo ───────────────────────────────────────────────────────────
     ws2 = wb.create_sheet("Resumo")
-    total    = len(resultados)
-    com_sw   = sum(1 for r in resultados if r["usa_software"] == "SIM")
-    sem_sw   = sum(1 for r in resultados if r["usa_software"] == "NÃO")
-    com_erro = sum(1 for r in resultados if r["usa_software"] == "ERRO")
-    com_email = sum(1 for r in resultados if r.get("email_responsavel", ""))
+    total      = len(resultados)
+    com_sw     = sum(1 for r in resultados if r["usa_software"] == "SIM")
+    sem_sw     = sum(1 for r in resultados if r["usa_software"] == "NÃO")
+    com_erro   = sum(1 for r in resultados if r["usa_software"] == "ERRO")
+    com_email  = sum(1 for r in resultados if r.get("email_responsavel", ""))
+    com_secoes = sum(1 for r in resultados if r.get("secoes_encontradas") == "SIM")
 
     contagem_sw = {}
     for r in resultados:
@@ -498,13 +549,14 @@ def gerar_excel(resultados: list, caminho_saida: str):
                 contagem_sw[sw] = contagem_sw.get(sw, 0) + 1
     sw_ord = sorted(contagem_sw.items(), key=lambda x: x[1], reverse=True)
 
-    ws2["A1"] = "RESUMO DA ANÁLISE — INVENTÁRIOS GEE 2024"
-    ws2["A1"].font = Font(name="Arial", bold=True, size=14, color="1F4E79")
+    ws2["A1"] = "RESUMO DA ANÁLISE — INVENTÁRIOS GEE 2024 (v4 — seções 3.1/3.2/4.5/4.6)"
+    ws2["A1"].font = Font(name="Arial", bold=True, size=13, color="1F4E79")
 
     dados_resumo = [
         ("Total de PDFs analisados:", total),
+        ("PDFs com seções estruturadas encontradas:", com_secoes),
         ("Empresas com software externo identificado:", com_sw),
-        ("% que usam software externo:", "=B4/B3" if total > 0 else "N/A"),
+        ("% que usam software externo:", "=B5/B3" if total > 0 else "N/A"),
         ("Empresas sem software externo:", sem_sw),
         ("E-mails de responsáveis encontrados:", com_email),
         ("PDFs com erro de leitura:", com_erro),
@@ -515,20 +567,20 @@ def gerar_excel(resultados: list, caminho_saida: str):
         ws2.cell(row=i, column=1, value=label).font = Font(name="Arial", size=10)
         c = ws2.cell(row=i, column=2, value=valor)
         c.font = Font(name="Arial", size=10)
-        if i == 5 and total > 0:
+        if i == 6 and total > 0:
             c.number_format = "0.0%"
 
-    ws2["A11"] = "SOFTWARES / PLATAFORMAS MAIS FREQUENTES"
-    ws2["A11"].font = Font(name="Arial", bold=True, size=12, color="1F4E79")
+    ws2["A13"] = "SOFTWARES / PLATAFORMAS MAIS FREQUENTES"
+    ws2["A13"].font = Font(name="Arial", bold=True, size=12, color="1F4E79")
 
     for col, title in [("A", "Software / Plataforma"), ("B", "Nº de Empresas")]:
-        c = ws2[f"{col}12"]
+        c = ws2[f"{col}14"]
         c.value = title
         c.font = Font(name="Arial", bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", start_color=COR_CAB)
         c.alignment = al_cen
 
-    for i, (sw, cnt) in enumerate(sw_ord, 13):
+    for i, (sw, cnt) in enumerate(sw_ord, 15):
         cor = COR_ALT if i % 2 == 0 else "FFFFFF"
         ws2[f"A{i}"] = sanitizar(sw)
         ws2[f"B{i}"] = cnt
@@ -537,7 +589,7 @@ def gerar_excel(resultados: list, caminho_saida: str):
             ws2[f"{col}{i}"].font = Font(name="Arial", size=10)
         ws2[f"B{i}"].alignment = Alignment(horizontal="center")
 
-    ws2.column_dimensions["A"].width = 50
+    ws2.column_dimensions["A"].width = 55
     ws2.column_dimensions["B"].width = 20
 
     Path(caminho_saida).parent.mkdir(parents=True, exist_ok=True)
@@ -548,7 +600,7 @@ def gerar_excel(resultados: list, caminho_saida: str):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Analisa PDFs de inventários GEE.")
+    parser = argparse.ArgumentParser(description="Analisa PDFs de inventários GEE (v4 — seções 3.1/3.2/4.5/4.6).")
     parser.add_argument("--pasta",   "-p", default=PASTA_PDFS)
     parser.add_argument("--saida",   "-s", default=None)
     parser.add_argument("--paginas", "-n", type=int, default=MAX_PAGINAS)
@@ -558,26 +610,29 @@ def main():
         data_hoje = datetime.now().strftime("%Y-%m-%d")
         args.saida = str(Path(args.pasta) / f"resultados_gee_{data_hoje}.xlsx")
 
-    print("=" * 60)
-    print("  ANALISADOR DE INVENTÁRIOS GEE — SOFTWARES E PLATAFORMAS")
-    print("=" * 60)
+    print("=" * 65)
+    print("  ANALISADOR DE INVENTÁRIOS GEE — SOFTWARES E PLATAFORMAS v4")
+    print("  Seções analisadas: 3.1 · 3.2 · 4.5 · 4.6")
+    print("=" * 65)
 
     resultados = analisar_pasta(args.pasta, args.paginas)
     if not resultados:
         print("Nenhum resultado para salvar.")
         return
 
-    total  = len(resultados)
-    com_sw = sum(1 for r in resultados if r["usa_software"] == "SIM")
-    erros  = sum(1 for r in resultados if r["usa_software"] == "ERRO")
-    com_email = sum(1 for r in resultados if r.get("email_responsavel", ""))
+    total      = len(resultados)
+    com_sw     = sum(1 for r in resultados if r["usa_software"] == "SIM")
+    erros      = sum(1 for r in resultados if r["usa_software"] == "ERRO")
+    com_email  = sum(1 for r in resultados if r.get("email_responsavel", ""))
+    com_secoes = sum(1 for r in resultados if r.get("secoes_encontradas") == "SIM")
 
     print(f"\n📊 Resumo:")
-    print(f"   Total de PDFs:                {total}")
-    print(f"   Com software externo:         {com_sw} ({100*com_sw/total:.1f}%)")
-    print(f"   Sem software externo:         {total - com_sw - erros}")
-    print(f"   E-mails encontrados:          {com_email} ({100*com_email/total:.1f}%)")
-    print(f"   Erros de leitura:             {erros}")
+    print(f"   Total de PDFs:                   {total}")
+    print(f"   Seções 3.1/3.2/4.5/4.6 extraídas:{com_secoes} ({100*com_secoes/total:.1f}%)")
+    print(f"   Com software externo:            {com_sw} ({100*com_sw/total:.1f}%)")
+    print(f"   Sem software externo:            {total - com_sw - erros}")
+    print(f"   E-mails encontrados:             {com_email} ({100*com_email/total:.1f}%)")
+    print(f"   Erros de leitura:                {erros}")
 
     gerar_excel(resultados, args.saida)
 
