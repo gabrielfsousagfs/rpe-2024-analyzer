@@ -1,0 +1,83 @@
+name: Analisar Créditos de Carbono
+
+on:
+  workflow_dispatch:
+    inputs:
+      gdrive_file_id:
+        description: "ID do arquivo ZIP no Google Drive (deixe em branco para usar o secret GDRIVE_FILE_ID)"
+        required: false
+        default: ""
+
+jobs:
+  analisar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      # ── 1. Checkout do repositório ─────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Python ─────────────────────────────────────────────────────────
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 3. Dependências ───────────────────────────────────────────────────
+      - name: Instalar dependências
+        run: pip install pymupdf openpyxl tqdm gdown
+
+      # ── 4. Download do ZIP com os PDFs ────────────────────────────────────
+      - name: Download do ZIP (Google Drive)
+        env:
+          FILE_ID: ${{ inputs.gdrive_file_id || secrets.GDRIVE_FILE_ID }}
+        run: |
+          echo "📥 Baixando ZIP dos PDFs..."
+          gdown "https://drive.google.com/uc?id=${FILE_ID}" -O inventarios.zip
+          echo "✅ Download concluído."
+
+      # ── 5. Extração do ZIP ────────────────────────────────────────────────
+      - name: Extrair ZIP
+        run: |
+          echo "📦 Extraindo PDFs..."
+          mkdir -p pdfs
+          unzip -q inventarios.zip -d pdfs
+          # Move arquivos para a raiz de pdfs/ se estiverem em subpastas
+          find pdfs -name "*.pdf" -not -path "pdfs/*.pdf" \
+            -exec mv {} pdfs/ \; 2>/dev/null || true
+          PDF_COUNT=$(find pdfs -maxdepth 1 -name "*.pdf" | wc -l)
+          echo "📄 Total de PDFs encontrados: ${PDF_COUNT}"
+
+      # ── 6. Executa o script de análise ────────────────────────────────────
+      - name: Analisar PDFs — Créditos de Carbono
+        run: |
+          echo "🔍 Iniciando análise de créditos de carbono..."
+          python analisar_creditos_carbono.py \
+            --pasta pdfs \
+            --saida "resultados_creditos_carbono_$(date +%Y-%m-%d).xlsx"
+
+      # ── 7. Upload do Excel como artefato ──────────────────────────────────
+      - name: Upload do resultado
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultados-creditos-carbono
+          path: "resultados_creditos_carbono_*.xlsx"
+          retention-days: 90
+
+      # ── 8. Sumário no log do workflow ─────────────────────────────────────
+      - name: Sumário
+        run: |
+          ARQUIVO=$(ls resultados_creditos_carbono_*.xlsx 2>/dev/null | head -1)
+          if [ -n "$ARQUIVO" ]; then
+            TAMANHO=$(du -sh "$ARQUIVO" | cut -f1)
+            echo "## ✅ Análise concluída" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Arquivo gerado:** \`$ARQUIVO\` ($TAMANHO)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Download:** aba *Artifacts* acima" >> $GITHUB_STEP_SUMMARY
+            echo "- **Colunas principais:** Empresa | Compra Créditos? | Padrões Identificados | Seções com Evidência | Contextos" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> Resultados marcados como **POSSÍVEL** requerem revisão manual." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Erro: nenhum arquivo gerado" >> $GITHUB_STEP_SUMMARY
+          fi
