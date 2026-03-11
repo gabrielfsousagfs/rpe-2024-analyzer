@@ -115,14 +115,6 @@ PADROES_CREDITO = [
     (r"\bVER[s]?\b",                              "VER"),
     (r"voluntary\s+emission\s+reduction",         "VER"),
 
-    # ---- Energia renovável certificada ----
-    (r"\bI.?REC[s]?\b",                           "I-REC"),
-    (r"international\s+rec\b",                    "I-REC"),
-    (r"\bREC[s]?\b(?!\w)",                        "REC"),
-    (r"certificado[s]?\s+de\s+energia\s+renov[aá]vel", "Certificado de Energia Renovável"),
-    (r"\bGO\b",                                   "Guarantees of Origin (GO)"),
-    (r"guarantee[s]?\s+of\s+origin",              "Guarantees of Origin"),
-
     # ---- Programas/plataformas de crédito brasileiros ----
     (r"\bSBCE\b",                                 "SBCE"),
     (r"sistema\s+brasileiro\s+de\s+com[eé]rcio\s+de\s+emiss[oõ]es","SBCE"),
