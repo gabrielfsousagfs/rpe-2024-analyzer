@@ -1,0 +1,80 @@
+name: Extrair CNPJ das Empresas
+
+on:
+  workflow_dispatch:
+    inputs:
+      gdrive_file_id:
+        description: "ID do arquivo ZIP no Google Drive (deixe em branco para usar o secret GDRIVE_FILE_ID)"
+        required: false
+        default: ""
+
+jobs:
+  extrair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ── 1. Checkout do repositório ─────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Python ─────────────────────────────────────────────────────────
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 3. Dependências ───────────────────────────────────────────────────
+      - name: Instalar dependências
+        run: pip install pymupdf openpyxl tqdm gdown
+
+      # ── 4. Download do ZIP com os PDFs ────────────────────────────────────
+      - name: Download do ZIP (Google Drive)
+        env:
+          FILE_ID: ${{ inputs.gdrive_file_id || secrets.GDRIVE_FILE_ID }}
+        run: |
+          echo "📥 Baixando ZIP dos PDFs..."
+          gdown "https://drive.google.com/uc?id=${FILE_ID}" -O inventarios.zip
+          echo "✅ Download concluído."
+
+      # ── 5. Extração do ZIP ────────────────────────────────────────────────
+      - name: Extrair ZIP
+        run: |
+          echo "📦 Extraindo PDFs..."
+          mkdir -p pdfs
+          unzip -q inventarios.zip -d pdfs
+          find pdfs -name "*.pdf" -not -path "pdfs/*.pdf" \
+            -exec mv {} pdfs/ \; 2>/dev/null || true
+          PDF_COUNT=$(find pdfs -maxdepth 1 -name "*.pdf" | wc -l)
+          echo "📄 Total de PDFs encontrados: ${PDF_COUNT}"
+
+      # ── 6. Executa o script de extração de CNPJ ───────────────────────────
+      - name: Extrair CNPJs
+        run: |
+          echo "🔍 Iniciando extração de CNPJs (apenas página 2 de cada PDF)..."
+          python extrair_cnpj.py \
+            --pasta pdfs \
+            --saida "cnpj_empresas_$(date +%Y-%m-%d).xlsx"
+
+      # ── 7. Upload do Excel como artefato ──────────────────────────────────
+      - name: Upload do resultado
+        uses: actions/upload-artifact@v4
+        with:
+          name: cnpj-empresas
+          path: "cnpj_empresas_*.xlsx"
+          retention-days: 90
+
+      # ── 8. Sumário no log do workflow ─────────────────────────────────────
+      - name: Sumário
+        run: |
+          ARQUIVO=$(ls cnpj_empresas_*.xlsx 2>/dev/null | head -1)
+          if [ -n "$ARQUIVO" ]; then
+            TAMANHO=$(du -sh "$ARQUIVO" | cut -f1)
+            echo "## ✅ Extração concluída" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Arquivo gerado:** \`$ARQUIVO\` ($TAMANHO)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Download:** aba *Artifacts* acima" >> $GITHUB_STEP_SUMMARY
+            echo "- **Colunas:** Arquivo PDF | Nome Fantasia | CNPJ (formatado) | CNPJ (somente dígitos) | CNPJ Válido? | Método | Observação" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Erro: nenhum arquivo gerado" >> $GITHUB_STEP_SUMMARY
+          fi
