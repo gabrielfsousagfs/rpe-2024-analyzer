@@ -110,6 +110,10 @@ jobs:
           echo "📦 Extraindo ZIP..."
           mkdir -p pdfs
           unzip -q pdfs.zip -d pdfs_raw
+          # Corrige permissões: ZIPs gerados pelo SharePoint/OneDrive às vezes
+          # extraem pastas sem permissão de escrita para o usuário atual, o
+          # que impede o 'mv' abaixo (rename exige escrita na pasta de origem)
+          chmod -R u+rwX pdfs_raw
           # Move todos os PDFs encontrados (independente de subpastas) para ./pdfs
           find pdfs_raw -name "*.pdf" -exec mv {} pdfs/ \;
           PDF_COUNT=$(find pdfs -name "*.pdf" | wc -l)
