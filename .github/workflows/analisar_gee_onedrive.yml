@@ -37,6 +37,7 @@ jobs:
 
       # ── 4. Baixar ZIP do OneDrive (link público, sem autenticação) ─────────
       - name: Baixar ZIP dos PDFs do OneDrive
+        timeout-minutes: 10
         env:
           ONEDRIVE_ZIP_URL: ${{ github.event.inputs.onedrive_zip_url }}
         run: |
@@ -62,10 +63,17 @@ jobs:
                   (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
               )
 
+          # Timeout em segundos: (tempo p/ conectar, tempo p/ receber dados entre bytes)
+          TIMEOUT = (15, 60)
+
           def tentar_baixar(u: str):
               """Tenta baixar o arquivo a partir da URL informada.
               Retorna a resposta (aberta, stream=True) se vier binário, ou None se vier HTML."""
-              r = session.get(u, allow_redirects=True, stream=True)
+              try:
+                  r = session.get(u, allow_redirects=True, stream=True, timeout=TIMEOUT)
+              except requests.exceptions.RequestException as e:
+                  print(f"⚠️  Falha de rede/timeout ao tentar {u}: {e}")
+                  return None
               content_type = r.headers.get("Content-Type", "")
               if r.ok and "text/html" not in content_type:
                   return r
@@ -78,22 +86,30 @@ jobs:
           # Tentativa 2 (fallback): resolve redirecionamentos primeiro (ex.: links curtos 1drv.ms)
           # e só então aplica download=1 na URL final
           if resposta is None:
-              resolvida = session.get(url, allow_redirects=True, stream=True)
-              final_url = resolvida.url
-              resolvida.close()
-              resposta = tentar_baixar(with_download_param(final_url))
+              try:
+                  resolvida = session.get(url, allow_redirects=True, stream=True, timeout=TIMEOUT)
+                  final_url = resolvida.url
+                  resolvida.close()
+                  resposta = tentar_baixar(with_download_param(final_url))
+              except requests.exceptions.RequestException as e:
+                  print(f"⚠️  Falha de rede/timeout ao resolver redirecionamentos: {e}")
 
           if resposta is None:
               # Diagnóstico: mostra o que está vindo, para investigarmos a causa
-              diag = session.get(with_download_param(url), allow_redirects=True)
-              print(f"❌ Não foi possível baixar diretamente (status {diag.status_code}).")
-              print(f"URL final após redirecionamentos: {diag.url}")
-              print(f"Content-Type: {diag.headers.get('Content-Type')}")
-              print("Primeiros 500 caracteres da resposta:")
-              print(diag.text[:500])
+              try:
+                  diag = session.get(with_download_param(url), allow_redirects=True, timeout=TIMEOUT)
+                  print(f"❌ Não foi possível baixar diretamente (status {diag.status_code}).")
+                  print(f"URL final após redirecionamentos: {diag.url}")
+                  print(f"Content-Type: {diag.headers.get('Content-Type')}")
+                  print("Primeiros 500 caracteres da resposta:")
+                  print(diag.text[:500])
+              except requests.exceptions.RequestException as e:
+                  print(f"❌ Não foi possível baixar o arquivo: falha de rede/timeout ({e}).")
               print("\nVerifique se o link está como 'Qualquer pessoa com o link' e se o tenant")
               print("não exige verificação adicional para acesso anônimo (nesse caso, use a")
               print("versão do workflow com Microsoft Graph API / App Registration).")
+              print("\nSe o erro foi de timeout, pode ser throttling da Microsoft para acessos")
+              print("automatizados repetidos ao mesmo link — aguarde alguns minutos e tente de novo.")
               sys.exit(1)
 
           with resposta as r:
