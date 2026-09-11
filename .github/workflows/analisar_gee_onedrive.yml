@@ -53,27 +53,50 @@ jobs:
           session = requests.Session()
           session.headers.update({"User-Agent": "Mozilla/5.0"})
 
-          # 1. Resolve redirecionamentos (ex.: links curtos 1drv.ms) até a URL final
-          resp = session.get(url, allow_redirects=True, stream=True)
-          final_url = resp.url
-          resp.close()
+          def with_download_param(u: str) -> str:
+              """Adiciona/força download=1 na URL, preservando os demais parâmetros."""
+              parts = urlsplit(u)
+              query = dict(parse_qsl(parts.query))
+              query["download"] = "1"
+              return urlunsplit(
+                  (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+              )
 
-          # 2. Força o parâmetro download=1, que faz o OneDrive devolver o
-          #    arquivo bruto em vez da página de pré-visualização
-          parts = urlsplit(final_url)
-          query = dict(parse_qsl(parts.query))
-          query["download"] = "1"
-          download_url = urlunsplit(
-              (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
-          )
-
-          # 3. Baixa o arquivo de fato
-          with session.get(download_url, stream=True) as r:
+          def tentar_baixar(u: str):
+              """Tenta baixar o arquivo a partir da URL informada.
+              Retorna a resposta (aberta, stream=True) se vier binário, ou None se vier HTML."""
+              r = session.get(u, allow_redirects=True, stream=True)
               content_type = r.headers.get("Content-Type", "")
-              if not r.ok or "text/html" in content_type:
-                  print(f"❌ Não foi possível baixar diretamente (status {r.status_code}, content-type '{content_type}').")
-                  print("Verifique se o link está como 'Qualquer pessoa com o link' e ainda é válido.")
-                  sys.exit(1)
+              if r.ok and "text/html" not in content_type:
+                  return r
+              r.close()
+              return None
+
+          # Tentativa 1: aplica download=1 direto na URL original (sem resolver redirect antes)
+          resposta = tentar_baixar(with_download_param(url))
+
+          # Tentativa 2 (fallback): resolve redirecionamentos primeiro (ex.: links curtos 1drv.ms)
+          # e só então aplica download=1 na URL final
+          if resposta is None:
+              resolvida = session.get(url, allow_redirects=True, stream=True)
+              final_url = resolvida.url
+              resolvida.close()
+              resposta = tentar_baixar(with_download_param(final_url))
+
+          if resposta is None:
+              # Diagnóstico: mostra o que está vindo, para investigarmos a causa
+              diag = session.get(with_download_param(url), allow_redirects=True)
+              print(f"❌ Não foi possível baixar diretamente (status {diag.status_code}).")
+              print(f"URL final após redirecionamentos: {diag.url}")
+              print(f"Content-Type: {diag.headers.get('Content-Type')}")
+              print("Primeiros 500 caracteres da resposta:")
+              print(diag.text[:500])
+              print("\nVerifique se o link está como 'Qualquer pessoa com o link' e se o tenant")
+              print("não exige verificação adicional para acesso anônimo (nesse caso, use a")
+              print("versão do workflow com Microsoft Graph API / App Registration).")
+              sys.exit(1)
+
+          with resposta as r:
               with open("pdfs.zip", "wb") as f:
                   for chunk in r.iter_content(chunk_size=8192):
                       f.write(chunk)
