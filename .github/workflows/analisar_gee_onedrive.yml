@@ -1,4 +1,4 @@
-name: Analisar Inventários GEE
+name: Analisar Inventários GEE Onedrive
 
 on:
   workflow_dispatch:
