@@ -1,0 +1,163 @@
+name: Extrair CNPJ das Empresas OneDrive
+
+on:
+  workflow_dispatch:
+    inputs:
+      onedrive_zip_url:
+        description: "Link de compartilhamento do ZIP no OneDrive (deixe em branco para usar o secret ONEDRIVE_ZIP_URL). Precisa estar como 'Qualquer pessoa com o link'"
+        required: false
+        default: ""
+
+jobs:
+  extrair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ── 1. Checkout do repositório ─────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Python ─────────────────────────────────────────────────────────
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 3. Dependências ───────────────────────────────────────────────────
+      - name: Instalar dependências
+        run: pip install pymupdf openpyxl tqdm requests
+
+      # ── 4. Download do ZIP com os PDFs (OneDrive, link público) ───────────
+      - name: Download do ZIP (OneDrive)
+        timeout-minutes: 10
+        env:
+          ONEDRIVE_ZIP_URL: ${{ inputs.onedrive_zip_url || secrets.ONEDRIVE_ZIP_URL }}
+        run: |
+          echo "📥 Baixando ZIP dos PDFs do OneDrive..."
+          python - <<'EOF'
+          import os
+          import sys
+          from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+          import requests
+
+          url = os.environ["ONEDRIVE_ZIP_URL"]
+          if not url:
+              print("❌ Nenhuma URL informada (nem no input, nem no secret ONEDRIVE_ZIP_URL).")
+              sys.exit(1)
+
+          session = requests.Session()
+          session.headers.update({"User-Agent": "Mozilla/5.0"})
+
+          # Timeout em segundos: (tempo p/ conectar, tempo p/ receber dados entre bytes)
+          TIMEOUT = (15, 60)
+
+          def with_download_param(u: str) -> str:
+              """Adiciona/força download=1 na URL, preservando os demais parâmetros."""
+              parts = urlsplit(u)
+              query = dict(parse_qsl(parts.query))
+              query["download"] = "1"
+              return urlunsplit(
+                  (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+              )
+
+          def tentar_baixar(u: str):
+              """Tenta baixar o arquivo a partir da URL informada.
+              Retorna a resposta (aberta, stream=True) se vier binário, ou None se vier HTML."""
+              try:
+                  r = session.get(u, allow_redirects=True, stream=True, timeout=TIMEOUT)
+              except requests.exceptions.RequestException as e:
+                  print(f"⚠️  Falha de rede/timeout ao tentar {u}: {e}")
+                  return None
+              content_type = r.headers.get("Content-Type", "")
+              if r.ok and "text/html" not in content_type:
+                  return r
+              r.close()
+              return None
+
+          # Tentativa 1: aplica download=1 direto na URL original (sem resolver redirect antes)
+          resposta = tentar_baixar(with_download_param(url))
+
+          # Tentativa 2 (fallback): resolve redirecionamentos primeiro (ex.: links curtos 1drv.ms)
+          # e só então aplica download=1 na URL final
+          if resposta is None:
+              try:
+                  resolvida = session.get(url, allow_redirects=True, stream=True, timeout=TIMEOUT)
+                  final_url = resolvida.url
+                  resolvida.close()
+                  resposta = tentar_baixar(with_download_param(final_url))
+              except requests.exceptions.RequestException as e:
+                  print(f"⚠️  Falha de rede/timeout ao resolver redirecionamentos: {e}")
+
+          if resposta is None:
+              # Diagnóstico: mostra o que está vindo, para investigarmos a causa
+              try:
+                  diag = session.get(with_download_param(url), allow_redirects=True, timeout=TIMEOUT)
+                  print(f"❌ Não foi possível baixar diretamente (status {diag.status_code}).")
+                  print(f"URL final após redirecionamentos: {diag.url}")
+                  print(f"Content-Type: {diag.headers.get('Content-Type')}")
+                  print("Primeiros 500 caracteres da resposta:")
+                  print(diag.text[:500])
+              except requests.exceptions.RequestException as e:
+                  print(f"❌ Não foi possível baixar o arquivo: falha de rede/timeout ({e}).")
+              print("\nVerifique se o link está como 'Qualquer pessoa com o link' e se o tenant")
+              print("não exige verificação adicional para acesso anônimo (nesse caso, use a")
+              print("versão do workflow com Microsoft Graph API / App Registration).")
+              print("\nSe o erro foi de timeout, pode ser throttling da Microsoft para acessos")
+              print("automatizados repetidos ao mesmo link — aguarde alguns minutos e tente de novo.")
+              sys.exit(1)
+
+          with resposta as r:
+              with open("inventarios.zip", "wb") as f:
+                  for chunk in r.iter_content(chunk_size=8192):
+                      f.write(chunk)
+
+          print("✅ Download concluído.")
+          EOF
+
+      # ── 5. Extração do ZIP ────────────────────────────────────────────────
+      - name: Extrair ZIP
+        run: |
+          echo "📦 Extraindo PDFs..."
+          mkdir -p pdfs
+          unzip -q inventarios.zip -d pdfs
+          # Corrige permissões: ZIPs gerados pelo SharePoint/OneDrive às vezes
+          # extraem pastas sem permissão de escrita para o usuário atual, o
+          # que impede o 'mv' abaixo (rename exige escrita na pasta de origem).
+          # Sem isso, o erro ficaria escondido pelo '2>/dev/null || true' a seguir.
+          chmod -R u+rwX pdfs
+          find pdfs -name "*.pdf" -not -path "pdfs/*.pdf" \
+            -exec mv {} pdfs/ \; 2>/dev/null || true
+          PDF_COUNT=$(find pdfs -maxdepth 1 -name "*.pdf" | wc -l)
+          echo "📄 Total de PDFs encontrados: ${PDF_COUNT}"
+
+      # ── 6. Executa o script de extração de CNPJ ───────────────────────────
+      - name: Extrair CNPJs
+        run: |
+          echo "🔍 Iniciando extração de CNPJs (apenas página 2 de cada PDF)..."
+          python extrair_cnpj.py \
+            --pasta pdfs \
+            --saida "cnpj_empresas_$(date +%Y-%m-%d).xlsx"
+
+      # ── 7. Upload do Excel como artefato ──────────────────────────────────
+      - name: Upload do resultado
+        uses: actions/upload-artifact@v4
+        with:
+          name: cnpj-empresas
+          path: "cnpj_empresas_*.xlsx"
+          retention-days: 90
+
+      # ── 8. Sumário no log do workflow ─────────────────────────────────────
+      - name: Sumário
+        run: |
+          ARQUIVO=$(ls cnpj_empresas_*.xlsx 2>/dev/null | head -1)
+          if [ -n "$ARQUIVO" ]; then
+            TAMANHO=$(du -sh "$ARQUIVO" | cut -f1)
+            echo "## ✅ Extração concluída" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Arquivo gerado:** \`$ARQUIVO\` ($TAMANHO)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Download:** aba *Artifacts* acima" >> $GITHUB_STEP_SUMMARY
+            echo "- **Colunas:** Arquivo PDF | Nome Fantasia | CNPJ (formatado) | CNPJ (somente dígitos) | CNPJ Válido? | Método | Observação" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Erro: nenhum arquivo gerado" >> $GITHUB_STEP_SUMMARY
+          fi
